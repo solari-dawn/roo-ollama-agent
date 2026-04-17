@@ -1,0 +1,8 @@
+
+fastapi
+uvicorn
+langchain
+langchain-community
+python-dotenv
+pytest
+requests

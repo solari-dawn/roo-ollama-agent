@@ -1,0 +1,27 @@
+# Secrets
+.env
+
+# Python 
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+
+# Editor settings
+.vscode/
+.idea/
+
+# app
+app/__pycache__/
+app/llm/__pycache__/
+
+# server
+server/__pycache__/
+
+# Tests
+tests/__pycache__/
+.pytest_cache/
+
+# venv
+venv/
