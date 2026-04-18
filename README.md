@@ -84,7 +84,6 @@ roo-ollama-agent/
 
 ```bash
 pip install -r requirements.txt
-pip install -r requirements-tests.txt
 ```
 
 ### 2. Configure environment
