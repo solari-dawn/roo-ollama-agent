@@ -19,12 +19,12 @@ Designed for dual RTX 3060 (12GB + 12GB) setups.
                 └─────────┬────────────┘
                           │
                           ▼
-                ┌──────────────────────┐
-                │   FastAPI Server     │  ← runs on PCJT (192.168.2.103)
-                │   /run              │
+                ┌───────────────────────┐
+                │   FastAPI Server      │  
+                │   /run                │
                 │   /v1/chat/completions│
-                │   X-API-Key | Bearer │
-                └─────────┬────────────┘
+                │   X-API-Key | Bearer  │
+                └─────────┬─────────────┘
                           │
         ┌─────────────────┴─────────────────┐
         ▼                                   ▼
@@ -36,7 +36,7 @@ Designed for dual RTX 3060 (12GB + 12GB) setups.
            └────────────┬────────────────┘
                         ▼
                ┌─────────────────┐
-               │   Ollama GPU    │  ← runs on remote (192.168.2.10)
+               │   Ollama GPU    │  ← runs on remote
                │ RTX 3060 x2     │
                └─────────────────┘
 ```
@@ -102,7 +102,7 @@ cp .env.example .env
 
 `.env` must contain:
 ```
-OLLAMA_BASE_URL=http://192.168.2.10:11434
+OLLAMA_BASE_URL=http://[ollama-server]]:11434
 PLANNER_MODEL=deepseek-r1:7b
 EXECUTOR_MODEL=qwen2.5-coder:7b
 TEMPERATURE=0.1
@@ -123,7 +123,7 @@ Generate a strong API key:
 ### 3. Confirm models are available on Ollama machine
 
 ```powershell
-curl http://192.168.2.10:11434/api/tags
+curl http://[ollama-server]:11434/api/tags
 ```
 
 Required models:
@@ -227,7 +227,7 @@ Streaming is supported — the server detects `"stream": true` and returns SSE f
 ## ⚠️ Known Issues & Fixes
 
 ### OllamaEndpointNotFoundError 404
-Model not available on Ollama machine. Run `curl http://192.168.2.10:11434/api/tags` to check available models and update `.env` accordingly.
+Model not available on Ollama machine. Run `curl http://ollama-server:11434/api/tags` to check available models and update `.env` accordingly.
 
 ### `ModuleNotFoundError: No module named 'app.llm.ollama'`
 Missing `__init__.py` files. See step 4 of Quick Start.
@@ -250,7 +250,7 @@ Both models cannot stay resident simultaneously on 2×12GB with full KV cache. O
 pytest -v
 ```
 
-Integration tests require live Ollama at `192.168.2.10:11434` with models loaded.
+Integration tests require live Ollama at `ollama-server:11434` with models loaded.
 
 ## 📌 Status
 
