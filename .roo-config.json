@@ -1,8 +1,8 @@
 {
-  "provider": "openai",
+  "provider": "openai-compatible",
   "openai": {
     "baseUrl": "http://127.0.0.1:8000/v1",
-    "apiKey": "dev-key"
+    "apiKey": "oVr/Cr/8e/UMjVTKdhetzyctoo6tE7JiJUF6TZekeDE="
   },
   "model": "bot-army"
 }

@@ -1,139 +1,115 @@
-import os
 import time
-import uuid
-import logging
-from typing import Optional, List, Any
-
-from fastapi import FastAPI, HTTPException, Security, Request
-from fastapi.security.api_key import APIKeyHeader
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict
-
+import json
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel
 from app.agent import run_agent
 
-# ---------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("api")
-
-# ---------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------
-API_KEY = os.getenv("API_KEY")
-if not API_KEY:
-    raise RuntimeError("API_KEY not set")
-
-api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
-
-# ---------------------------------------------------------------------
-# App
-# ---------------------------------------------------------------------
 app = FastAPI()
 
-# ---------------------------------------------------------------------
-# Auth
-# ---------------------------------------------------------------------
-async def verify_key(request: Request, key: Optional[str] = Security(api_key_header)):
-    resolved = key
 
-    if not resolved:
-        auth = request.headers.get("Authorization", "")
-        if auth.startswith("Bearer "):
-            resolved = auth.replace("Bearer ", "").strip()
+class TaskRequest(BaseModel):
+    task: str
 
-    if resolved != API_KEY:
-        raise HTTPException(status_code=403, detail="Forbidden")
 
-    return resolved
+@app.post("/run")
+def run(req: TaskRequest):
+    result = run_agent(req.task)
+    return {"result": result}
 
-# ---------------------------------------------------------------------
-# Models (VERY relaxed for Roo)
-# ---------------------------------------------------------------------
-class ChatMessage(BaseModel):
-    role: str
-    content: Optional[Any] = None
-    model_config = ConfigDict(extra="allow")
 
-class ChatRequest(BaseModel):
-    model: Optional[str] = "bot-army"
-    messages: List[ChatMessage] = []
-    model_config = ConfigDict(extra="allow")
-
-# ---------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------
-def extract_text(content: Any) -> str:
-    if isinstance(content, str):
-        return content
-
-    if isinstance(content, list):
-        parts = []
-        for item in content:
-            if isinstance(item, dict) and "text" in item:
-                parts.append(item["text"])
-        return "\n".join(parts)
-
-    return ""
-
-# ---------------------------------------------------------------------
-# Health
-# ---------------------------------------------------------------------
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
-
-# ---------------------------------------------------------------------
-# OpenAI-compatible endpoint (STRICT + SAFE)
-# ---------------------------------------------------------------------
 @app.post("/v1/chat/completions")
-async def chat(req: ChatRequest, _: str = Security(verify_key)):
+def openai_compat(req: dict):
+    messages = req.get("messages", [])
+    tools = req.get("tools", [])
+    stream = req.get("stream", False)
 
-    # Extract task
-    user_msgs = [m for m in req.messages if m.role == "user"]
+    task = next(
+        (m["content"] for m in reversed(messages) if m.get("role") == "user"),
+        ""
+    )
 
-    if user_msgs:
-        task = extract_text(user_msgs[-1].content).strip()
-    else:
-        task = "\n".join(extract_text(m.content) for m in req.messages).strip()
+    result = run_agent(task)
 
-    if not task:
-        task = "Hello"
+    # Check if Roo sent tools - if so, wrap response as attempt_completion tool call
+    tool_names = [t.get("function", {}).get("name", "") for t in tools]
+    use_tool_call = "attempt_completion" in tool_names
 
-    logger.info(f"Task: {task[:80]}")
+    def make_message():
+        if use_tool_call:
+            return {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_botarmy",
+                        "type": "function",
+                        "function": {
+                            "name": "attempt_completion",
+                            "arguments": json.dumps({"result": result})
+                        }
+                    }
+                ]
+            }
+        return {"role": "assistant", "content": result}
 
-    # Run agent
-    try:
-        result = await run_agent(task)
-    except Exception as e:
-        logger.error(f"Agent error: {e}", exc_info=True)
-        result = "Error running agent."
+    if stream:
+        def generate():
+            msg = make_message()
+            if use_tool_call:
+                chunk = {
+                    "id": "chatcmpl-botarmy",
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": req.get("model", "bot-army"),
+                    "choices": [{"index": 0, "delta": msg, "finish_reason": None}]
+                }
+                yield f"data: {json.dumps(chunk)}\n\n"
+                done = {
+                    "id": "chatcmpl-botarmy",
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": req.get("model", "bot-army"),
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]
+                }
+            else:
+                chunk = {
+                    "id": "chatcmpl-botarmy",
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": req.get("model", "bot-army"),
+                    "choices": [{"index": 0, "delta": msg, "finish_reason": None}]
+                }
+                yield f"data: {json.dumps(chunk)}\n\n"
+                done = {
+                    "id": "chatcmpl-botarmy",
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": req.get("model", "bot-army"),
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+                }
+            yield f"data: {json.dumps(done)}\n\n"
+            yield "data: [DONE]\n\n"
 
-    # 🚨 HARD GUARANTEE STRING
-    if not isinstance(result, str):
-        result = str(result)
+        return StreamingResponse(generate(), media_type="text/event-stream")
 
-    result = result.strip()
-
-    if not result:
-        result = "Hello."
-
-    # 🚨 FORCE EXACT JSON RESPONSE (this is the critical part)
-    response = {
-        "id": f"chatcmpl-{uuid.uuid4().hex}",
+    msg = make_message()
+    finish = "tool_calls" if use_tool_call else "stop"
+    return JSONResponse(content={
+        "id": "chatcmpl-botarmy",
         "object": "chat.completion",
         "created": int(time.time()),
-        "model": req.model or "bot-army",
-        "choices": [
-            {
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": result
-                },
-                "finish_reason": "stop"
-            }
+        "model": req.get("model", "bot-army"),
+        "choices": [{"index": 0, "message": msg, "finish_reason": finish}],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    })
+
+
+@app.get("/v1/models")
+def list_models():
+    return {
+        "object": "list",
+        "data": [
+            {"id": "bot-army", "object": "model", "owned_by": "local"}
         ]
     }
-
-    return JSONResponse(content=response)

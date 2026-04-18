@@ -2,8 +2,8 @@
 
 A local-first AI coding agent system combining:
 
-- Ollama (GPU inference)
-- LangChain + langchain-ollama (agent orchestration)
+- Ollama (GPU inference, remote machine)
+- LangChain + langchain-community (agent orchestration)
 - FastAPI (execution API with auth)
 - pytest (evaluation layer)
 - VS Code Roo Code (UI agent interface)
@@ -20,7 +20,7 @@ Designed for dual RTX 3060 (12GB + 12GB) setups.
                           │
                           ▼
                 ┌──────────────────────┐
-                │   FastAPI Server     │
+                │   FastAPI Server     │  ← runs on PCJT (192.168.2.103)
                 │   /run              │
                 │   /v1/chat/completions│
                 │   X-API-Key | Bearer │
@@ -30,13 +30,13 @@ Designed for dual RTX 3060 (12GB + 12GB) setups.
         ▼                                   ▼
  ┌────────────────────┐        ┌────────────────────┐
  │ Planner Model      │        │ Executor Model     │
- │ deepseek-r1:14b    │        │ deepseek-coder     │
+ │ deepseek-r1:7b     │        │ qwen2.5-coder:7b   │
  └─────────┬──────────┘        └─────────┬──────────┘
            │                             │
            └────────────┬────────────────┘
                         ▼
                ┌─────────────────┐
-               │   Ollama GPU    │
+               │   Ollama GPU    │  ← runs on remote (192.168.2.10)
                │ RTX 3060 x2     │
                └─────────────────┘
 ```
@@ -49,46 +49,38 @@ Designed for dual RTX 3060 (12GB + 12GB) setups.
 - **🔐 Dual-header authentication**
   - `X-API-Key` header (native clients, curl, tests)
   - `Authorization: Bearer` (Roo Code, OpenAI-compatible clients)
-  - Input validation and prompt injection blocking
 - **🔌 Dual endpoints**
   - `/run` — native Bot Army API
-  - `/v1/chat/completions` — OpenAI-compatible (Roo Code, Continue, Cursor)
+  - `/v1/chat/completions` — OpenAI-compatible with streaming + tool call interception
 - **🚀 GPU optimized**
   - 2 × RTX 3060 (12GB each)
   - No cloud dependency
-- **⚡ Async execution**
-  - LLM inference runs in thread pool via `run_in_executor`
-  - FastAPI event loop never blocked
-- **🗂️ Sandboxed file tools**
-  - All agent file I/O jailed to `AGENT_WORKSPACE`
-  - Path traversal blocked at resolution time
+- **⚡ Sync execution via FastAPI threadpool**
+  - LangChain LLM calls are synchronous; FastAPI runs them in a thread pool automatically
 - **🧪 Built-in evaluation suite**
-  - 14 tests covering auth, validation, agent behavior, and OpenAI-compat
-  - Structured logging across all layers
-- **🔌 Roo integration ready**
-  - Bot Army profile for structured tasks
-  - Ollama direct profile for interactive chat
 
 ## 📁 Project Structure
 
 ```
 roo-ollama-agent/
 ├── app/
-│   ├── agent.py          # Async planner/executor loop
-│   ├── config.py         # Env config with fail-fast validation
+│   ├── agent.py          # Planner/executor loop (sync)
+│   ├── config.py         # Env config
 │   ├── llm/
-│   │   └── ollama.py     # (deprecated — superseded by agent.py)
+│   │   ├── __init__.py
+│   │   └── ollama.py     # LangChain Ollama wrapper
 │   └── tools/
-│       └── fs.py         # Sandboxed file read/write/delete/list
+│       └── fs.py         # File read/write tools
 ├── server/
-│   └── api.py            # FastAPI app — /run + /v1/chat/completions
+│   └── api.py            # FastAPI — /run + /v1/chat/completions + /v1/models
 ├── tests/
-│   ├── conftest.py       # Auto-loads .env before test collection
-│   ├── test_api.py       # 11 endpoint/auth/validation tests
-│   ├── test_agent.py     # Agent response structure tests
-│   └── test_prompts.py   # Consistency tests
-├── workspace/            # Agent file sandbox (auto-created)
+│   ├── test_api.py
+│   ├── test_agent.py
+│   └── test_prompts.py
+├── workspace/
+├── .env
 ├── .env.example
+├── .roo-config.json
 ├── requirements.txt
 ├── pytest.ini
 └── README.md
@@ -108,49 +100,73 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Update `.env`:
+`.env` must contain:
 ```
 OLLAMA_BASE_URL=http://192.168.2.10:11434
-PLANNER_MODEL=deepseek-r1:14b
-EXECUTOR_MODEL=deepseek-coder:6.7b
+PLANNER_MODEL=deepseek-r1:7b
+EXECUTOR_MODEL=qwen2.5-coder:7b
 TEMPERATURE=0.1
 MAX_STEPS=5
 API_KEY=your-secret-key-here
 AGENT_WORKSPACE=./workspace
+OPENAI_BASE_URL=http://127.0.0.1:8000/v1
+OPENAI_API_KEY=your-secret-key-here
 ```
+
+> ⚠️ `OLLAMA_BASE_URL` must point to the remote Ollama machine IP, not localhost. FastAPI runs on PCJT; Ollama runs on the remote GPU machine.
 
 Generate a strong API key:
 ```powershell
 [System.Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Maximum 256 }))
 ```
 
-### 3. Start Ollama
-
-```bash
-ollama serve
-ollama pull deepseek-r1:14b
-ollama pull deepseek-coder:6.7b
-```
-
-### 4. Run API
-
-```bash
-uvicorn server.api:app --reload --port 8000
-```
-
-### 5. Run tests
+### 3. Confirm models are available on Ollama machine
 
 ```powershell
-# Set key for the session then run
-$env:API_KEY="your-secret-key-here"; pytest -v
+curl http://192.168.2.10:11434/api/tags
+```
 
-# Or rely on conftest.py auto-loading .env
+Required models:
+- `deepseek-r1:7b` (planner)
+- `qwen2.5-coder:7b` (executor)
+
+If missing, on the Ollama machine:
+```bash
+ollama pull deepseek-r1:7b
+ollama pull qwen2.5-coder:7b
+```
+
+### 4. Ensure Python package structure is intact
+
+The following `__init__.py` files must exist:
+```
+app/__init__.py
+app/llm/__init__.py
+```
+
+Create if missing:
+```powershell
+New-Item -Path "app/__init__.py" -ItemType File -Force
+New-Item -Path "app/llm/__init__.py" -ItemType File -Force
+```
+
+### 5. Run API
+
+```powershell
+uvicorn server.api:app --port 8000
+```
+
+> Do NOT use `--reload` in production — it can cause issues with LangChain model initialisation on file change.
+
+### 6. Run tests
+
+```powershell
 pytest -v
 ```
 
 ## 🔐 Authentication
 
-All `/run` and `/v1/chat/completions` requests require a valid key via either header:
+All `/run` and `/v1/chat/completions` requests require a valid key:
 
 ```bash
 # X-API-Key (native)
@@ -159,188 +175,91 @@ curl -X POST http://localhost:8000/run \
   -H "Content-Type: application/json" \
   -d '{"task": "Write a Python sort function"}'
 
-# Authorization: Bearer (OpenAI-compatible clients)
+# Authorization: Bearer (Roo / OpenAI-compatible clients)
 curl -X POST http://localhost:8000/v1/chat/completions \
   -H "Authorization: Bearer your-secret-key-here" \
   -H "Content-Type: application/json" \
-  -d '{"model":"bot-army","messages":[{"role":"user","content":"Write a Python sort function"}]}'
+  -d '{"model":"bot-army","messages":[{"role":"user","content":"Write a Python sort function"}],"stream":false}'
 ```
-
-| Condition | Response |
-|---|---|
-| Missing key | 403 Forbidden |
-| Wrong key | 403 Forbidden |
-| Task < 3 chars | 422 Unprocessable |
-| Task > 2000 chars | 422 Unprocessable |
-| Injection attempt | 422 Unprocessable |
-| Valid request | 200 OK |
 
 ## 🔌 Roo Code Setup
 
-Install the **Roo Code** extension in VS Code (`ext install RooVeterinaryInc.roo-cline`).
+Install Roo Code extension: `ext install RooVeterinaryInc.roo-cline`
 
-Configure two profiles via Roo Code settings → **OpenAI Compatible**:
+### VS Code `settings.json`
 
-### Profile 1 — Bot Army (structured multi-step tasks)
+Located at `C:\Users\<user>\AppData\Roaming\Code\User\settings.json`:
 
-```
-Provider:  OpenAI Compatible
-Base URL:  http://192.168.2.10:8000
-API Key:   your-secret-key-here
-Model ID:  bot-army
-```
-
-Roo posts to `/v1/chat/completions` using `Authorization: Bearer`. The server extracts the task from the last user message and runs the full planner/executor pipeline.
-
-### Profile 2 — Ollama Direct (interactive chat)
-
-```
-Provider:  OpenAI Compatible
-Base URL:  http://192.168.2.10:11434
-API Key:   ollama
-Model ID:  deepseek-r1:14b
+```json
+"roo-cline.openaiBaseUrl": "http://127.0.0.1:8000/v1",
+"roo-cline.openaiApiKey": "your-secret-key-here",
+"roo-cline.model": "bot-army",
+"roo-cline.requestTimeout": 120000
 ```
 
-Bypasses the agent pipeline. Ollama's API is natively OpenAI-compatible. Use `deepseek-coder:6.7b` for faster interactive responses.
+> ⚠️ Set `requestTimeout` to at least 120000 (120 seconds). The planner + executor pipeline takes 20–60 seconds per request depending on model load and GPU memory availability.
 
-Switch profiles via the model selector in the Roo Code top bar.
+### `.roo-config.json` (project root)
 
-### Recommended workflow
-
-**🧠 Bot Army — structured tasks**
-```
-Design a FastAPI authentication system
-Implement step 1 only
-Implement step 2 only
-```
-
-**💻 Ollama Direct — interactive**
-```
-Explain this function
-What does this regex do
-Fix this syntax error
+```json
+{
+  "provider": "openai-compatible",
+  "openai": {
+    "baseUrl": "http://127.0.0.1:8000/v1",
+    "apiKey": "your-secret-key-here"
+  },
+  "model": "bot-army"
+}
 ```
 
-### ⚠️ Anti-patterns
+### How Roo integrates
 
-- ❌ "Build entire app" in one Bot Army prompt
-- ❌ No step review between executor runs
-- ❌ API key in version control or logs
+Roo sends requests to `/v1/chat/completions`. The FastAPI server:
+1. Extracts the last user message as the task
+2. Runs the planner (deepseek-r1:7b) to generate steps
+3. Runs the executor (qwen2.5-coder:7b) on each step
+4. Returns the combined result
 
-## 🗂️ File Tool Sandbox
+If Roo sends tool definitions (e.g. `attempt_completion`), the server wraps the response as a tool call so Roo's protocol is satisfied.
 
-The agent's file tools (`read_file`, `write_file`, `delete_file`, `list_files`) are restricted to `AGENT_WORKSPACE`. Any path resolving outside the workspace is blocked and logged.
+Streaming is supported — the server detects `"stream": true` and returns SSE format.
 
-```
-AGENT_WORKSPACE=./workspace   # set in .env
-```
+## ⚠️ Known Issues & Fixes
+
+### OllamaEndpointNotFoundError 404
+Model not available on Ollama machine. Run `curl http://192.168.2.10:11434/api/tags` to check available models and update `.env` accordingly.
+
+### `ModuleNotFoundError: No module named 'app.llm.ollama'`
+Missing `__init__.py` files. See step 4 of Quick Start.
+
+### `coroutine object is not JSON serializable`
+`run_agent` was defined as `async def`. All functions in `app/agent.py` must be plain `def` — FastAPI handles threading automatically for sync functions.
+
+### Roo error: "did not provide any assistant messages"
+Caused by Roo's OpenAI provider expecting streaming SSE format. Ensure `server/api.py` handles `"stream": true` with `StreamingResponse`.
+
+### Roo error: "did not call any of the required tools"
+Roo sends tool schemas and expects tool call responses. Ensure `server/api.py` detects `attempt_completion` in the tools list and wraps the response as a tool call.
+
+### GPU memory eviction between requests
+Both models cannot stay resident simultaneously on 2×12GB with full KV cache. Ollama evicts and reloads between planner and executor calls — adds ~4 seconds per request. Expected behaviour.
 
 ## 🧪 Testing
 
-| Test | Purpose |
-|---|---|
-| `test_health` | Docs endpoint reachable |
-| `test_run_accepts_api_key_header` | X-API-Key auth → 200 |
-| `test_run_rejects_no_key` | Missing key → 403 |
-| `test_run_rejects_bad_key` | Wrong key → 403 |
-| `test_run_accepts_bearer_token` | Bearer auth → 200 |
-| `test_run_rejects_bad_bearer` | Wrong Bearer → 403 |
-| `test_run_rejects_short_task` | < 3 chars → 422 |
-| `test_run_rejects_long_task` | > 2000 chars → 422 |
-| `test_run_rejects_injection` | Injection phrase → 422 |
-| `test_openai_compat_returns_choices` | /v1/chat/completions response structure |
-| `test_openai_compat_rejects_no_key` | Unauthenticated compat request → 403 |
-| `test_openai_compat_rejects_no_user_message` | No user role → 400 |
-| `test_prime_task` | Agent returns valid result |
-| `test_consistency` | Two runs share significant token overlap |
-
-`tests/conftest.py` auto-loads `.env` — no manual export required.
-
-## 🔄 CI Pipeline (GitHub Actions)
-
-`.github/workflows/tests.yml`:
-
-```yaml
-name: Agent Tests
-
-on:
-  push:
-  pull_request:
-
-jobs:
-  test:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Run tests
-        env:
-          API_KEY: ${{ secrets.API_KEY }}
-          OLLAMA_BASE_URL: http://localhost:11434
-          PLANNER_MODEL: deepseek-r1:14b
-          EXECUTOR_MODEL: deepseek-coder:6.7b
-        run: pytest -v
+```powershell
+pytest -v
 ```
 
-> Integration tests (`test_agent`, `test_prompts`, `test_openai_compat_returns_choices`) require a live Ollama instance. In CI without Ollama, the remaining 11 auth/validation tests will pass.
-
-## 🧠 Design Philosophy
-
-1. **Deterministic-first** — low temperature for stable, reproducible outputs
-2. **Planner/Executor separation** — prevents local model confusion on complex tasks
-3. **Small-step execution** — avoids hallucinated full-code dumps
-4. **GPU-aware inference** — 14B for reasoning, 6–7B for coding
-5. **Async-first API** — LLM calls in thread pool, event loop never blocked
-6. **Fail-fast config** — missing env vars raise at startup, not at request time
-7. **Standards-compatible** — OpenAI endpoint format works with any compatible client
-
-## ⚠️ Known Limitations
-
-- No true multi-GPU model sharding in Ollama
-- Planner may over-explain on simple tasks
-- Large models (26B/32B) not recommended
-- Integration tests require a live Ollama instance
-- No streaming support (planned Phase 2)
-
-## 🚀 Roadmap
-
-### Phase 1 ✅ (complete)
-- Basic agent loop
-- API key authentication (X-API-Key + Bearer)
-- OpenAI-compatible `/v1/chat/completions` endpoint
-- Input validation + injection blocking
-- Async execution
-- Sandboxed file tools
-- 14-test suite
-- Roo Code dual-profile integration
-
-### Phase 2
-- Tool execution (git, terminal)
-- Structured JSON planning output
-- Streaming responses
-- Per-agent rate limiting
-
-### Phase 3
-- Multi-agent system (architect / coder / reviewer)
-- Roo-native IDE behavior
+Integration tests require live Ollama at `192.168.2.10:11434` with models loaded.
 
 ## 📌 Status
 
-- ✔ API operational — dual endpoints
+- ✔ API operational — `/run` + `/v1/chat/completions` + `/v1/models`
 - ✔ Auth — X-API-Key + Bearer
-- ✔ Agent functional (async)
-- ✔ GPU inference active (RTX 3060 ×2)
-- ✔ Tests: 14/14 passing
-- ✔ File tools sandboxed
-- ✔ Roo Code configured — Bot Army + Ollama Direct profiles
+- ✔ Streaming — SSE format supported
+- ✔ Tool call interception — `attempt_completion` wrapping
+- ✔ Agent functional (sync, FastAPI threadpool)
+- ✔ GPU inference active (RTX 3060 ×2, remote Ollama)
+- ✔ Roo Code configured
+- ⚠ Models: deepseek-r1:14b and deepseek-coder:6.7b not currently on Ollama machine — using deepseek-r1:7b + qwen2.5-coder:7b
 - ⚠ Prompt tuning ongoing
