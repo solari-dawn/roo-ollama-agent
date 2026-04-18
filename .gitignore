@@ -26,3 +26,6 @@ pytest.ini
 
 # venv
 venv/
+
+# temp files
+temp/

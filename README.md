@@ -21,8 +21,9 @@ Designed for dual RTX 3060 (12GB + 12GB) setups.
                           ▼
                 ┌──────────────────────┐
                 │   FastAPI Server     │
-                │   /run endpoint      │
-                │   X-API-Key auth     │
+                │   /run              │
+                │   /v1/chat/completions│
+                │   X-API-Key | Bearer │
                 └─────────┬────────────┘
                           │
         ┌─────────────────┴─────────────────┐
@@ -45,9 +46,13 @@ Designed for dual RTX 3060 (12GB + 12GB) setups.
 - **🧠 Dual-model reasoning system**
   - Planner → structured step decomposition
   - Executor → code generation per step
-- **🔐 API key authentication**
-  - `X-API-Key` header required on all `/run` requests
+- **🔐 Dual-header authentication**
+  - `X-API-Key` header (native clients, curl, tests)
+  - `Authorization: Bearer` (Roo Code, OpenAI-compatible clients)
   - Input validation and prompt injection blocking
+- **🔌 Dual endpoints**
+  - `/run` — native Bot Army API
+  - `/v1/chat/completions` — OpenAI-compatible (Roo Code, Continue, Cursor)
 - **🚀 GPU optimized**
   - 2 × RTX 3060 (12GB each)
   - No cloud dependency
@@ -58,11 +63,11 @@ Designed for dual RTX 3060 (12GB + 12GB) setups.
   - All agent file I/O jailed to `AGENT_WORKSPACE`
   - Path traversal blocked at resolution time
 - **🧪 Built-in evaluation suite**
-  - API tests including auth negative cases
-  - Agent consistency tests
+  - 14 tests covering auth, validation, agent behavior, and OpenAI-compat
   - Structured logging across all layers
 - **🔌 Roo integration ready**
-  - Plug directly into Roo Code
+  - Bot Army profile for structured tasks
+  - Ollama direct profile for interactive chat
 
 ## 📁 Project Structure
 
@@ -76,10 +81,10 @@ roo-ollama-agent/
 │   └── tools/
 │       └── fs.py         # Sandboxed file read/write/delete/list
 ├── server/
-│   └── api.py            # FastAPI app with auth, validation, logging
+│   └── api.py            # FastAPI app — /run + /v1/chat/completions
 ├── tests/
 │   ├── conftest.py       # Auto-loads .env before test collection
-│   ├── test_api.py       # Endpoint + auth + validation tests
+│   ├── test_api.py       # 11 endpoint/auth/validation tests
 │   ├── test_agent.py     # Agent response structure tests
 │   └── test_prompts.py   # Consistency tests
 ├── workspace/            # Agent file sandbox (auto-created)
@@ -105,7 +110,7 @@ cp .env.example .env
 
 Update `.env`:
 ```
-OLLAMA_BASE_URL=http://127.0.0.1:11434
+OLLAMA_BASE_URL=http://192.168.2.10:11434
 PLANNER_MODEL=deepseek-r1:14b
 EXECUTOR_MODEL=deepseek-coder:6.7b
 TEMPERATURE=0.1
@@ -136,107 +141,120 @@ uvicorn server.api:app --reload --port 8000
 ### 5. Run tests
 
 ```powershell
-# Windows — set key for the session
+# Set key for the session then run
 $env:API_KEY="your-secret-key-here"; pytest -v
 
-# Or rely on conftest.py auto-loading .env (recommended)
+# Or rely on conftest.py auto-loading .env
 pytest -v
 ```
 
 ## 🔐 Authentication
 
-All `/run` requests require an `X-API-Key` header:
+All `/run` and `/v1/chat/completions` requests require a valid key via either header:
 
 ```bash
+# X-API-Key (native)
 curl -X POST http://localhost:8000/run \
   -H "X-API-Key: your-secret-key-here" \
   -H "Content-Type: application/json" \
-  -d '{"task": "Write a Python function to sort a list"}'
+  -d '{"task": "Write a Python sort function"}'
+
+# Authorization: Bearer (OpenAI-compatible clients)
+curl -X POST http://localhost:8000/v1/chat/completions \
+  -H "Authorization: Bearer your-secret-key-here" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"bot-army","messages":[{"role":"user","content":"Write a Python sort function"}]}'
 ```
 
 | Condition | Response |
 |---|---|
-| Missing key | 401 Unauthorized |
+| Missing key | 403 Forbidden |
 | Wrong key | 403 Forbidden |
 | Task < 3 chars | 422 Unprocessable |
 | Task > 2000 chars | 422 Unprocessable |
 | Injection attempt | 422 Unprocessable |
 | Valid request | 200 OK |
 
-## 🔌 Roo Workflow (IMPORTANT)
+## 🔌 Roo Code Setup
 
-This system is designed for agent-driven development inside VS Code.
+Install the **Roo Code** extension in VS Code (`ext install RooVeterinaryInc.roo-cline`).
 
-### Step 1 — Connect Roo
+Configure two profiles via Roo Code settings → **OpenAI Compatible**:
 
-In Roo settings:
+### Profile 1 — Bot Army (structured multi-step tasks)
 
-```json
-{
-  "provider": "custom",
-  "endpoint": "http://127.0.0.1:8000/run",
-  "headers": {
-    "X-API-Key": "your-secret-key-here"
-  }
-}
+```
+Provider:  OpenAI Compatible
+Base URL:  http://192.168.2.10:8000
+API Key:   your-secret-key-here
+Model ID:  bot-army
 ```
 
-### Step 2 — Recommended workflow
+Roo posts to `/v1/chat/completions` using `Authorization: Bearer`. The server extracts the task from the last user message and runs the full planner/executor pipeline.
 
-**🧠 1. Ask for plan only**
+### Profile 2 — Ollama Direct (interactive chat)
+
+```
+Provider:  OpenAI Compatible
+Base URL:  http://192.168.2.10:11434
+API Key:   ollama
+Model ID:  deepseek-r1:14b
+```
+
+Bypasses the agent pipeline. Ollama's API is natively OpenAI-compatible. Use `deepseek-coder:6.7b` for faster interactive responses.
+
+Switch profiles via the model selector in the Roo Code top bar.
+
+### Recommended workflow
+
+**🧠 Bot Army — structured tasks**
 ```
 Design a FastAPI authentication system
-```
-
-**🧠 2. Review plan**
-
-Ensure:
-- Steps are clear
-- No ambiguity
-
-**💻 3. Execute step-by-step**
-```
 Implement step 1 only
 Implement step 2 only
 ```
 
-**🔁 4. Iterate**
+**💻 Ollama Direct — interactive**
+```
+Explain this function
+What does this regex do
+Fix this syntax error
+```
 
-Fix issues progressively rather than full generation.
+### ⚠️ Anti-patterns
 
-### ⚠️ Anti-patterns (avoid)
-
-- ❌ "Build entire app" in one prompt
-- ❌ No step control
-- ❌ No review loop
-- ❌ Sending API key in plaintext logs or version control
+- ❌ "Build entire app" in one Bot Army prompt
+- ❌ No step review between executor runs
+- ❌ API key in version control or logs
 
 ## 🗂️ File Tool Sandbox
 
-The agent's file tools (`read_file`, `write_file`, `delete_file`, `list_files`) are restricted to `AGENT_WORKSPACE`. Any path that resolves outside the workspace is blocked.
+The agent's file tools (`read_file`, `write_file`, `delete_file`, `list_files`) are restricted to `AGENT_WORKSPACE`. Any path resolving outside the workspace is blocked and logged.
 
 ```
 AGENT_WORKSPACE=./workspace   # set in .env
 ```
 
-All file operations are logged with the resolved absolute path. Path traversal attempts (e.g. `../../etc/passwd`) are blocked and logged as warnings.
-
-## 🧪 Testing Strategy
-
-Tests cover both behavior and security boundaries.
+## 🧪 Testing
 
 | Test | Purpose |
 |---|---|
-| `test_health` | Endpoint availability |
-| `test_run_endpoint` | Valid authenticated request → 200 |
-| `test_run_rejects_no_key` | Missing auth → 401 |
+| `test_health` | Docs endpoint reachable |
+| `test_run_accepts_api_key_header` | X-API-Key auth → 200 |
+| `test_run_rejects_no_key` | Missing key → 403 |
 | `test_run_rejects_bad_key` | Wrong key → 403 |
-| `test_run_rejects_short_task` | Input too short → 422 |
-| `test_run_rejects_injection` | Prompt injection → 422 |
-| `test_prime_task` | Agent response structure |
-| `test_consistency` | Output overlap across two runs |
+| `test_run_accepts_bearer_token` | Bearer auth → 200 |
+| `test_run_rejects_bad_bearer` | Wrong Bearer → 403 |
+| `test_run_rejects_short_task` | < 3 chars → 422 |
+| `test_run_rejects_long_task` | > 2000 chars → 422 |
+| `test_run_rejects_injection` | Injection phrase → 422 |
+| `test_openai_compat_returns_choices` | /v1/chat/completions response structure |
+| `test_openai_compat_rejects_no_key` | Unauthenticated compat request → 403 |
+| `test_openai_compat_rejects_no_user_message` | No user role → 400 |
+| `test_prime_task` | Agent returns valid result |
+| `test_consistency` | Two runs share significant token overlap |
 
-`tests/conftest.py` auto-loads `.env` before collection — no manual export required.
+`tests/conftest.py` auto-loads `.env` — no manual export required.
 
 ## 🔄 CI Pipeline (GitHub Actions)
 
@@ -274,64 +292,55 @@ jobs:
         run: pytest -v
 ```
 
-> Note: Integration tests (`test_agent`, `test_prompts`) require a running Ollama instance. In CI without Ollama, only `test_api` auth/validation tests will pass. Use mock-based unit tests for pure CI coverage.
+> Integration tests (`test_agent`, `test_prompts`, `test_openai_compat_returns_choices`) require a live Ollama instance. In CI without Ollama, the remaining 11 auth/validation tests will pass.
 
 ## 🧠 Design Philosophy
 
-1. **Deterministic-first agent design**
-   - Low temperature for stable outputs
-
-2. **Planner/Executor separation**
-   - Prevents local model confusion
-
-3. **Small-step execution**
-   - Avoids hallucinated full-code dumps
-
-4. **GPU-aware inference**
-   - 14B → reasoning
-   - 6–7B → coding
-
-5. **Async-first API**
-   - LLM calls run in thread pool, event loop stays free
-
-6. **Fail-fast config**
-   - Missing env vars raise at startup, not at request time
+1. **Deterministic-first** — low temperature for stable, reproducible outputs
+2. **Planner/Executor separation** — prevents local model confusion on complex tasks
+3. **Small-step execution** — avoids hallucinated full-code dumps
+4. **GPU-aware inference** — 14B for reasoning, 6–7B for coding
+5. **Async-first API** — LLM calls in thread pool, event loop never blocked
+6. **Fail-fast config** — missing env vars raise at startup, not at request time
+7. **Standards-compatible** — OpenAI endpoint format works with any compatible client
 
 ## ⚠️ Known Limitations
 
 - No true multi-GPU model sharding in Ollama
-- Planner may still over-explain on simple tasks
-- Large models (26B/32B) are not recommended
-- Requires structured prompting discipline
+- Planner may over-explain on simple tasks
+- Large models (26B/32B) not recommended
 - Integration tests require a live Ollama instance
+- No streaming support (planned Phase 2)
 
 ## 🚀 Roadmap
 
-### Phase 1 ✅ (current)
+### Phase 1 ✅ (complete)
 - Basic agent loop
-- API key authentication
+- API key authentication (X-API-Key + Bearer)
+- OpenAI-compatible `/v1/chat/completions` endpoint
 - Input validation + injection blocking
 - Async execution
 - Sandboxed file tools
-- Test suite (auth + behavior)
-- Roo integration
+- 14-test suite
+- Roo Code dual-profile integration
 
 ### Phase 2
 - Tool execution (git, terminal)
 - Structured JSON planning output
+- Streaming responses
 - Per-agent rate limiting
 
 ### Phase 3
 - Multi-agent system (architect / coder / reviewer)
-- Streaming responses
 - Roo-native IDE behavior
 
 ## 📌 Status
 
-- ✔ API working with auth
+- ✔ API operational — dual endpoints
+- ✔ Auth — X-API-Key + Bearer
 - ✔ Agent functional (async)
-- ✔ GPU inference active
-- ✔ Test suite: 8/8 passing
+- ✔ GPU inference active (RTX 3060 ×2)
+- ✔ Tests: 14/14 passing
 - ✔ File tools sandboxed
-- ✔ Input validation active
+- ✔ Roo Code configured — Bot Army + Ollama Direct profiles
 - ⚠ Prompt tuning ongoing
